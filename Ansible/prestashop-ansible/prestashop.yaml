@@ -1,0 +1,205 @@
+---
+- name: Install PrestaShop
+  hosts: prestashop
+  become: yes
+
+  vars:
+    php_version: "7.4"
+    mysql_root_password: "StrongPassword"
+    mysql_database: "prestashop_db"
+    mysql_user: "prestashop_user"
+    mysql_password: "StrongPassword"
+    prestashop_version: "1.7.8.8"
+    prestashop_download_url: "github_url/prestashop_8.2.0.zip"
+    web_root: "/var/www/html"
+
+  tasks:
+    # Update and install required packages
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+
+    - name: Install required packages
+      apt:
+        name:
+          - apache2
+          - unzip
+          - curl
+          - libapache2-mod-php
+          - php{{ php_version }}
+          - php{{ php_version }}-mysql
+          - php{{ php_version }}-xml
+          - php{{ php_version }}-gd
+          - php{{ php_version }}-mbstring
+          - php{{ php_version }}-intl
+          - php{{ php_version }}-zip
+          - php{{ php_version }}-curl
+          - php{{ php_version }}-dom
+          - php{{ php_version }}-xml
+          - php{{ php_version }}-cli
+          - php{{ php_version }}-common
+          - php{{ php_version }}-xmlrpc
+          - php{{ php_version }}-soap
+          - mysql-server
+        state: present
+
+    # Start and enable services
+    - name: Ensure Apache is running
+      service:
+        name: apache2
+        state: started
+        enabled: true
+
+    - name: Set memory_limit in php.ini
+      ansible.builtin.lineinfile:
+        path: /etc/php/7.4/apache2/php.ini
+        regexp: '^memory_limit'
+        line: 'memory_limit = 512M'
+        state: present
+
+    - name: Set post_max_size in php.ini
+      ansible.builtin.lineinfile:
+        path: /etc/php/7.4/apache2/php.ini
+        regexp: '^post_max_size'
+        line: 'post_max_size = 32M'
+        state: present
+
+    - name: Set upload_max_filesize in php.ini
+      ansible.builtin.lineinfile:
+        path: /etc/php/7.4/apache2/php.ini
+        regexp: '^upload_max_filesize'
+        line: 'upload_max_filesize = 32M'
+        state: present
+
+    - name: Set date.timezone in php.ini
+      ansible.builtin.lineinfile:
+        path: /etc/php/7.4/apache2/php.ini
+        regexp: '^date.timezone'
+        line: 'date.timezone = Europe/Paris'
+        state: present
+
+    - name: Restart Apache to apply changes
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
+
+    # Setup MySQL
+    - name: Install MySQL and dependencies
+      apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      loop:
+        - mysql-server
+        - mysql-client
+        - python3-mysqldb
+        - libmysqlclient-dev
+
+    - name: Start and enable MySQL service
+      service:
+        name: mysql
+        state: started
+        enabled: yes
+
+    - name: Create MySQL user
+      mysql_user:
+        name: "{{ mysql_user }}"
+        password: "{{ mysql_password }}"
+        priv: '*.*:ALL'
+        host: '%'
+        state: present
+
+    - name: Create MySQL database
+      mysql_db:
+        name: "{{ mysql_database }}"
+        state: present
+
+    - name: Enable remote login to MySQL
+      lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: '^bind-address'
+        line: 'bind-address = 0.0.0.0'
+        backup: yes
+      notify:
+        - Restart MySQL
+
+    # Download and install PrestaShop
+    - name: Download PrestaShop
+      get_url:
+        url: "{{ prestashop_download_url }}"
+        dest: "/tmp/prestashop.zip"
+
+    - name: Extract PrestaShop
+      unarchive:
+        src: "/tmp/prestashop.zip"
+        dest: "{{ web_root }}"
+        remote_src: yes
+
+    - name: Set permissions for PrestaShop
+      file:
+        path: "{{ web_root }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+        recurse: yes
+
+    # Configure Apache
+    - name: Configure Apache for PrestaShop
+      copy:
+        dest: /etc/apache2/sites-available/prestashop.conf
+        content: |
+          <VirtualHost *:80>
+            ServerName epicerie-mezghani.majedghorbel.com
+            DocumentRoot {{ web_root }}
+            <Directory {{ web_root }}>
+              Options Indexes FollowSymLinks
+              AllowOverride All
+              Require all granted
+            </Directory>
+          </VirtualHost>
+
+    - name: Enable PrestaShop site and rewrite module
+      command: "{{ item }}"
+      with_items:
+        - a2ensite prestashop
+        - a2enmod rewrite
+
+    - name: Install Certbot and dependencies
+      ansible.builtin.package:
+        name:
+          - certbot
+          - python3-certbot-apache
+        state: present
+
+    - name: Obtain SSL certificate for epicerie-mezghani.majedghorbel.com
+      ansible.builtin.command:
+        cmd: >
+          certbot --apache -d epicerie-mezghani.majedghorbel.com --non-interactive
+          --agree-tos --email administrateur@majedghorbel.com
+        creates: /etc/letsencrypt/live/epicerie-mezghani.majedghorbel.com/fullchain.pem
+
+    - name: Ensure Apache is restarted after Certbot changes
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
+
+    - name: Enable auto-renewal for Let's Encrypt certificates
+      ansible.builtin.cron:
+        name: "Renew Let's Encrypt certificates"
+        job: "certbot renew --quiet"
+        state: present
+        user: root
+
+    - name: Restart Apache
+      service:
+        name: apache2
+        state: restarted
+
+# Handlers
+  handlers:
+    - name: Restart MySQL
+      service:
+        name: mysql
+        state: restarted

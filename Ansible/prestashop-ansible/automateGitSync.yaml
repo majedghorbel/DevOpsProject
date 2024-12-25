@@ -1,0 +1,41 @@
+---
+- name: Automate Git synchronization setup
+  hosts: all
+  become: yes
+  vars:
+    git_repo_url: "github_url/prestashop.git" # Replace with your repository URL
+    local_git_dir: "/var/www/html"
+    branch: "master"
+
+  tasks:
+    - name: Install Git if not installed
+      ansible.builtin.package:
+        name: git
+        state: present
+
+    - name: Configure Git credential storage
+      ansible.builtin.command:
+        cmd: git config --global credential.helper store
+      register: git_credential_store
+
+    - name: Ensure the local Git directory exists
+      ansible.builtin.file:
+        path: "{{ local_git_dir }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    - name: Clone the Git repository if not already cloned
+      ansible.builtin.git:
+        repo: "{{ git_repo_url }}"
+        dest: "{{ local_git_dir }}"
+        version: "{{ branch }}"
+        force: yes
+
+    - name: Create a cron job for synchronization every 2 minutes
+      ansible.builtin.cron:
+        name: "Git synchronization"
+        job: "cd {{ local_git_dir }} && git fetch --all && git reset --hard origin/{{ branch }} && git pull origin {{ branch }}"
+        minute: "*/2"
+        user: root
